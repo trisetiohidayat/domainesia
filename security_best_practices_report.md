@@ -10,10 +10,10 @@ Impact: account details, CSRF tokens, email addresses, or other authenticated pa
 
 Evidence:
 
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:582) returns `response_preview` from endpoint-driven login output.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:840) returns `response_preview` from generic live DNS endpoint output.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:1296) includes full failed GET stdout in error messages.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:1333) includes full failed POST stdout in error messages.
+- `src/main.rs` returned `response_preview` from endpoint-driven login output.
+- `src/main.rs` returned `response_preview` from generic live DNS endpoint output.
+- `src/main.rs` included full failed GET stdout in error messages.
+- `src/main.rs` included full failed POST stdout in error messages.
 
 Recommendation:
 
@@ -27,7 +27,7 @@ Recommendation:
 
 Evidence:
 
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:1341) accepts URLs starting with `https://my.domainesia.com`.
+- `src/main.rs` accepted URLs starting with `https://my.domainesia.com`.
 
 Risk:
 
@@ -47,10 +47,10 @@ Recommendation:
 
 Evidence:
 
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:249) writes `~/.domainesia/config.env`.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:1260) writes config updates.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:1557) writes DNS backups.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:1264) has `set_owner_only_permissions`, but it is not applied to config or backup files.
+- `src/main.rs` writes `~/.domainesia/config.env`.
+- `src/main.rs` writes config updates.
+- `src/main.rs` writes DNS backups.
+- `src/main.rs` had `set_owner_only_permissions`, but it was not applied to config or backup files.
 
 Risk:
 
@@ -66,10 +66,10 @@ Recommendation:
 
 Evidence:
 
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:388) writes a runtime helper script.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:1202) places it at `~/.domainesia/cdp-cookie-capture.mjs`.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:391) executes `node`.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:20) allows `DOMAINESIA_CHROME_PATH` override.
+- `src/main.rs` writes a runtime helper script.
+- `src/main.rs` places it at `~/.domainesia/cdp-cookie-capture.mjs`.
+- `src/main.rs` executes `node`.
+- `src/main.rs` allows `DOMAINESIA_CHROME_PATH` override.
 
 Risk:
 
@@ -87,8 +87,8 @@ Recommendation:
 
 Evidence:
 
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:345) implements `auth logout` by removing only the cookie jar.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:1194) stores the dedicated Chrome profile under `~/.domainesia/chrome-profile`.
+- `src/main.rs` implemented `auth logout` by removing only the cookie jar.
+- `src/main.rs` stores the dedicated Chrome profile under `~/.domainesia/chrome-profile`.
 
 Risk:
 
@@ -105,8 +105,8 @@ Recommendation:
 
 Evidence:
 
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:485) implements endpoint-driven login.
-- [src/main.rs](/Users/tri-mac/code/clis/domainesia/src/main.rs:771) still supports generic endpoint-based `dns add` if `DOMAINESIA_DNS_ADD_ENDPOINT` is configured.
+- `src/main.rs` implements endpoint-driven login.
+- `src/main.rs` still supports generic endpoint-based `dns add` if `DOMAINESIA_DNS_ADD_ENDPOINT` is configured.
 
 Risk:
 
