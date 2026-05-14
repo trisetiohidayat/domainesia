@@ -1,0 +1,16 @@
+/target/
+
+# Local DomaiNesia auth/config material. These should stay under ~/.domainesia,
+# but keep defensive ignores in case someone tests inside the repo.
+.domainesia/
+cookies.txt
+*.cookies.txt
+*.har
+*.env
+!.env.example
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

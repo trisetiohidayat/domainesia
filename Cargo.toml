@@ -1,0 +1,11 @@
+[package]
+name = "domainesia"
+version = "0.1.0"
+edition = "2021"
+description = "Agent-friendly CLI harness for DomaiNesia DNS workflows"
+license = "MIT"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
