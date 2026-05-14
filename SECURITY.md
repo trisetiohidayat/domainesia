@@ -34,6 +34,25 @@ DNS write commands fetch the current DNS Management form, preserve existing reco
 domainesia --json dns list --domain example.my.id
 ```
 
+Live DNS writes also require an exact confirmation guard:
+
+```bash
+domainesia --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --live --confirm app.example.my.id
+```
+
+Before every live DNS write, the CLI writes a pre-change backup under:
+
+```text
+~/.domainesia/backups/<domain>/<timestamp>.json
+```
+
+Use `auth validate` before write sessions and `auth logout` when finished on shared machines:
+
+```bash
+domainesia --json auth validate
+domainesia --json auth logout
+```
+
 ## Reporting Issues
 
 Open a private security advisory or contact the repository owner directly for bugs that could expose credentials, cookies, account data, or unintended live writes.

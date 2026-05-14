@@ -148,6 +148,7 @@ struct DomainInfo {
 struct DnsForm {
     token: String,
     domain_id: String,
+    domain: String,
     records: Vec<DnsRecord>,
 }
 
@@ -263,13 +264,15 @@ fn cmd_auth(opts: &Opts) -> Result<(), String> {
     let sub = opts.args.get(1).map(String::as_str).unwrap_or("");
     match sub {
         "status" => cmd_auth_status(opts),
+        "validate" => cmd_auth_validate(opts),
+        "logout" => cmd_auth_logout(opts),
         "open-login" => cmd_auth_open_login(opts),
         "browser-login" => cmd_auth_browser_login(opts),
         "import-cookies" => cmd_auth_import_cookies(opts),
         "configure" => cmd_auth_configure(opts),
         "login" => cmd_auth_login(opts),
         _ => Err(
-            "usage: domainesia auth <status|open-login|import-cookies|configure|login> ..."
+            "usage: domainesia auth <status|validate|logout|open-login|import-cookies|configure|login> ..."
                 .to_string(),
         ),
     }
@@ -314,6 +317,48 @@ fn cmd_auth_open_login(opts: &Opts) -> Result<(), String> {
             "{{\"login_url\":\"{}\",\"opened\":{},\"next\":\"Log in manually, then export/copy cookies to the configured cookie jar or use auth import-cookies.\"}}",
             json_escape(login_url),
             opened
+        ),
+    );
+    Ok(())
+}
+
+fn cmd_auth_validate(opts: &Opts) -> Result<(), String> {
+    let html = http_get_path("/clientarea.php")?;
+    let authenticated = html.contains("MyDomaiNesia")
+        && !html.contains("rp=/login")
+        && !html.contains("Login to your account");
+    let data = format!(
+        "{{\"authenticated\":{},\"bytes\":{},\"dashboard_hint\":{}}}",
+        authenticated,
+        html.len(),
+        html.contains("Dashboard") || html.contains("MyDomaiNesia")
+    );
+    if authenticated {
+        emit_ok(opts, "auth validate", &data);
+        Ok(())
+    } else {
+        emit_ok(opts, "auth validate", &data);
+        Err("session is not authenticated; run auth browser-login".to_string())
+    }
+}
+
+fn cmd_auth_logout(opts: &Opts) -> Result<(), String> {
+    let config = Config::load();
+    let cookie_jar = config
+        .get("DOMAINESIA_COOKIE_JAR")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_cookie_jar_path);
+    let existed = cookie_jar.exists();
+    if existed {
+        fs::remove_file(&cookie_jar).map_err(|e| format!("failed to remove cookie jar: {e}"))?;
+    }
+    emit_ok(
+        opts,
+        "auth logout",
+        &format!(
+            "{{\"cookie_jar\":\"{}\",\"removed\":{}}}",
+            json_escape(&cookie_jar.display().to_string()),
+            existed
         ),
     );
     Ok(())
@@ -710,6 +755,7 @@ fn cmd_dns(opts: &Opts) -> Result<(), String> {
     let sub = opts.args.get(1).map(String::as_str).unwrap_or("");
     match sub {
         "list" => cmd_dns_list(opts),
+        "export" => cmd_dns_export(opts),
         "plan-add" => {
             let record = parse_record(&opts.args)?;
             emit_ok(opts, "dns plan-add", &record_plan_json(&record));
@@ -718,7 +764,7 @@ fn cmd_dns(opts: &Opts) -> Result<(), String> {
         "add" => cmd_dns_add(opts),
         "update" => cmd_dns_update(opts),
         "delete" => cmd_dns_delete(opts),
-        _ => Err("usage: domainesia dns <list|plan-add|add|update|delete> ...".to_string()),
+        _ => Err("usage: domainesia dns <list|export|plan-add|add|update|delete> ...".to_string()),
     }
 }
 
@@ -811,6 +857,28 @@ fn cmd_dns_list(opts: &Opts) -> Result<(), String> {
             records_json(&form.records)
         ),
     );
+    Ok(())
+}
+
+fn cmd_dns_export(opts: &Opts) -> Result<(), String> {
+    let domain = resolve_domain_from_args(&opts.args)?;
+    let form = load_dns_form_for_domain(&domain)?;
+    let export = dns_export_json(&domain, &form.records);
+    if let Some(path) = value_after(&opts.args, "--output") {
+        fs::write(path, &export).map_err(|e| format!("failed to write export: {e}"))?;
+        emit_ok(
+            opts,
+            "dns export",
+            &format!(
+                "{{\"domain\":\"{}\",\"record_count\":{},\"output\":\"{}\"}}",
+                json_escape(&domain.domain),
+                form.records.len(),
+                json_escape(path)
+            ),
+        );
+    } else {
+        emit_ok(opts, "dns export", &export);
+    }
     Ok(())
 }
 
@@ -996,6 +1064,10 @@ fn resolve_domain(domain_name: &str) -> Result<DomainInfo, String> {
 
 fn load_dns_form(opts: &Opts) -> Result<DnsForm, String> {
     let domain = resolve_domain_from_args(&opts.args)?;
+    load_dns_form_for_domain(&domain)
+}
+
+fn load_dns_form_for_domain(domain: &DomainInfo) -> Result<DnsForm, String> {
     let html = http_get_path(&format!(
         "/clientarea.php?action=domaindns&domainid={}",
         domain.id
@@ -1028,15 +1100,37 @@ fn submit_or_preview_dns_form(
         );
         return Ok(());
     }
+    if let Some(record) = &changed {
+        let expected = fqdn(record);
+        let confirm = value_after(&opts.args, "--confirm")
+            .ok_or_else(|| format!("live DNS write requires --confirm {expected}"))?;
+        if confirm != expected {
+            return Err(format!(
+                "confirmation mismatch: expected --confirm {expected}, got {confirm}"
+            ));
+        }
+    } else {
+        return Err("live DNS write requires a changed record to confirm".to_string());
+    }
+    let current_domain = DomainInfo {
+        id: form.domain_id.clone(),
+        domain: form.domain.clone(),
+        registration_date: String::new(),
+        next_due_date: String::new(),
+        status: String::new(),
+    };
+    let current_form = load_dns_form_for_domain(&current_domain)?;
+    let backup_path = write_dns_backup(&current_domain, &current_form.records)?;
     let response = http_post_form("/clientarea.php?action=domaindns", &body)?;
     let success = response.contains("DNS Management") || response.contains("Changes Saved");
     emit_ok(
         opts,
         command_name,
         &format!(
-            "{{\"mode\":\"live\",\"domain_id\":\"{}\",\"record_count\":{},\"success_hint\":{},\"response_bytes\":{}}}",
+            "{{\"mode\":\"live\",\"domain_id\":\"{}\",\"record_count\":{},\"backup_path\":\"{}\",\"success_hint\":{},\"response_bytes\":{}}}",
             json_escape(&form.domain_id),
             form.records.len(),
+            json_escape(&backup_path.display().to_string()),
             success,
             response.len()
         ),
@@ -1100,11 +1194,34 @@ fn default_browser_profile_path() -> PathBuf {
         .join("chrome-profile")
 }
 
+fn default_backup_dir() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".domainesia").join("backups")
+}
+
 fn runtime_script_path() -> Result<PathBuf, String> {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let dir = PathBuf::from(home).join(".domainesia");
     fs::create_dir_all(&dir).map_err(|e| format!("failed to create runtime directory: {e}"))?;
     Ok(dir.join("cdp-cookie-capture.mjs"))
+}
+
+fn timestamp_compact() -> String {
+    let output = Command::new("date")
+        .arg("-u")
+        .arg("+%Y%m%dT%H%M%SZ")
+        .output();
+    output
+        .ok()
+        .and_then(|out| {
+            if out.status.success() {
+                Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown-time".to_string())
 }
 
 fn upsert_config_values(updates: &[(&str, &str)]) -> Result<(), String> {
@@ -1343,6 +1460,7 @@ fn parse_dns_form(html: &str, domain: &str) -> Option<DnsForm> {
     Some(DnsForm {
         token,
         domain_id,
+        domain: domain.to_string(),
         records,
     })
 }
@@ -1421,6 +1539,25 @@ fn dns_form_body(form: &DnsForm) -> String {
         .join("&")
 }
 
+fn dns_export_json(domain: &DomainInfo, records: &[DnsRecord]) -> String {
+    format!(
+        "{{\"domain\":\"{}\",\"domain_id\":\"{}\",\"record_count\":{},\"records\":[{}]}}",
+        json_escape(&domain.domain),
+        json_escape(&domain.id),
+        records.len(),
+        records_json(records)
+    )
+}
+
+fn write_dns_backup(domain: &DomainInfo, records: &[DnsRecord]) -> Result<PathBuf, String> {
+    let dir = default_backup_dir().join(&domain.domain);
+    fs::create_dir_all(&dir).map_err(|e| format!("failed to create backup directory: {e}"))?;
+    let path = dir.join(format!("{}.json", timestamp_compact()));
+    let content = dns_export_json(domain, records);
+    fs::write(&path, content).map_err(|e| format!("failed to write DNS backup: {e}"))?;
+    Ok(path)
+}
+
 fn record_plan_json(record: &DnsRecord) -> String {
     format!(
         "{{\"fqdn\":\"{}\",\"record\":{},\"steps\":[\"Open MyDomaiNesia DNS Management for the domain\",\"Create or edit the matching record\",\"Verify propagation after save\"],\"safe_to_run_live\":false}}",
@@ -1479,7 +1616,7 @@ fn fqdn(record: &DnsRecord) -> String {
 
 fn print_help() {
     println!(
-        "domainesia {VERSION}\n\nUSAGE:\n  domainesia [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Endpoint-driven login; dry-run by default\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n"
+        "domainesia {VERSION}\n\nUSAGE:\n  domainesia [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove local cookie jar\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Endpoint-driven login; dry-run by default\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require --confirm <fqdn>\n"
     );
 }
 
@@ -1668,5 +1805,78 @@ mod tests {
     #[test]
     fn url_encodes_form_values() {
         assert_eq!(url_encode("a b+c@example.com"), "a+b%2Bc%40example.com");
+    }
+
+    #[test]
+    fn parses_sanitized_domain_fixture() {
+        let html = r#"
+        <tr onclick="clickableSafeRedirect(event, 'clientarea.php?action=domaindetails&amp;id=123456', false)">
+          <td class="text-center ssl-info" data-element-id="123456" data-type="domain" data-domain="example.my.id"></td>
+          <td><div>example.my.id</div><small>Auto Renew</small></td>
+          <td><span class="w-hidden">2026-01-01</span>01/01/2026</td>
+          <td><span class="w-hidden">2027-01-01</span>01/01/2027</td>
+          <td><span class="label status status-active">Active</span></td>
+        </tr>
+        "#;
+        let domains = parse_domains(html);
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains[0].id, "123456");
+        assert_eq!(domains[0].domain, "example.my.id");
+        assert_eq!(domains[0].registration_date, "2026-01-01");
+        assert_eq!(domains[0].next_due_date, "2027-01-01");
+        assert_eq!(domains[0].status, "Active");
+    }
+
+    #[test]
+    fn parses_sanitized_dns_form_fixture() {
+        let html = r#"
+        <form method="post" action="/clientarea.php?action=domaindns">
+          <input type="hidden" name="token" value="redacted" />
+          <input type="hidden" name="sub" value="save" />
+          <input type="hidden" name="domainid" value="123456" />
+          <tbody>
+            <tr>
+              <td><input type="hidden" name="dnsrecid[]" value="" /><input type="text" name="dnsrecordhost[]" value="app" /></td>
+              <td><select name="dnsrecordtype[]"><option value="A" selected="selected">A</option><option value="CNAME">CNAME</option></select></td>
+              <td><input type="text" name="dnsrecordaddress[]" value="192.0.2.10" /></td>
+              <td><input type="hidden" name="dnsrecordpriority[]" value="N/A" />N/A</td>
+            </tr>
+            <tr>
+              <td><input type="text" name="dnsrecordhost[]" /></td>
+              <td><select name="dnsrecordtype[]"><option value="A">A</option></select></td>
+              <td><input type="text" name="dnsrecordaddress[]" /></td>
+              <td><input type="text" name="dnsrecordpriority[]" /></td>
+            </tr>
+          </tbody>
+        </form>
+        "#;
+        let form = parse_dns_form(html, "example.my.id").expect("dns form");
+        assert_eq!(form.token, "redacted");
+        assert_eq!(form.domain_id, "123456");
+        assert_eq!(form.records.len(), 1);
+        assert_eq!(form.records[0].name, "app");
+        assert_eq!(form.records[0].record_type, "A");
+        assert_eq!(form.records[0].value, "192.0.2.10");
+    }
+
+    #[test]
+    fn parses_sanitized_invoice_fixture() {
+        let html = r#"
+        <tbody>
+          <tr onclick="clickableSafeRedirect(event, 'invoice?id=1001', false)">
+            <td>1001</td>
+            <td><span class="w-hidden">2026-01-01</span>01/01/2026</td>
+            <td><span class="w-hidden">2026-01-08</span>08/01/2026</td>
+            <td data-order="10000">Rp 10.000,00</td>
+            <td><span class="label status status-paid"><span class="textgreen">Paid</span></span></td>
+          </tr>
+        </tbody>
+        "#;
+        let json = parse_invoices_json(html);
+        assert!(json.contains("\"id\":\"1001\""));
+        assert!(json.contains("\"invoice_date\":\"01/01/2026\""));
+        assert!(json.contains("\"due_date\":\"08/01/2026\""));
+        assert!(json.contains("\"total\":\"Rp 10.000,00\""));
+        assert!(json.contains("\"status\":\"Paid\""));
     }
 }

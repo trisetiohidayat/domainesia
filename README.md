@@ -9,7 +9,8 @@ The tool is designed for automation agents and shell users who need stable JSON 
 - Auth: working through browser-assisted cookie capture.
 - Read coverage: dashboard, feature inventory, domains, domain details, DNS records, invoices, raw authenticated GET.
 - Write coverage: DNS add/update/delete through the MyDomaiNesia DNS Management form.
-- Safety: write commands are dry-run by default and require `--live` for account changes.
+- Safety: write commands are dry-run by default; live DNS writes require `--live` and `--confirm <fqdn>`.
+- Backup: every live DNS write creates a pre-change JSON backup.
 
 DomaiNesia's public API documentation is oriented around reseller/RNA usage. This CLI therefore works against the authenticated MyDomaiNesia web interface and does not assume a private customer API.
 
@@ -79,6 +80,7 @@ Preferred auth path:
 ```bash
 domainesia --json auth browser-login --timeout-seconds 180
 domainesia --json auth status
+domainesia --json auth validate
 ```
 
 `auth browser-login` opens a dedicated Chrome profile, waits for you to log in on the official MyDomaiNesia page, captures DomaiNesia cookies through Chrome DevTools Protocol, and writes a Netscape cookie jar to:
@@ -92,6 +94,12 @@ Manual cookie import:
 ```bash
 domainesia auth open-login
 domainesia --json auth import-cookies --from ~/Downloads/my.domainesia.cookies.txt
+```
+
+Logout removes the local cookie jar:
+
+```bash
+domainesia --json auth logout
 ```
 
 Endpoint-driven login is available only after a login endpoint is confirmed:
@@ -114,8 +122,10 @@ domainesia --json domains resolve --domain example.my.id
 domainesia --json domains detail --domain example.my.id
 
 domainesia --json dns list --domain example.my.id
+domainesia --json dns export --domain example.my.id --output ./dns-backup.json
 domainesia --json dns plan-add --domain example.my.id --name app --type A --value 192.0.2.10
 domainesia --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --dry-run
+domainesia --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --live --confirm app.example.my.id
 domainesia --json dns update --domain example.my.id --name app --value 192.0.2.11 --dry-run
 domainesia --json dns delete --domain example.my.id --name app --dry-run
 
@@ -129,6 +139,12 @@ List current records:
 
 ```bash
 domainesia --json dns list --domain example.my.id
+```
+
+Export current records:
+
+```bash
+domainesia --json dns export --domain example.my.id --output ./dns-backup.json
 ```
 
 Add a record safely:
@@ -150,13 +166,20 @@ domainesia --json dns add \
   --name app \
   --type A \
   --value 192.0.2.10 \
-  --live
+  --live \
+  --confirm app.example.my.id
 ```
 
 Verify:
 
 ```bash
 domainesia --json dns list --domain example.my.id
+```
+
+Before every live DNS write, the CLI writes a JSON backup of the current DNS state under:
+
+```text
+~/.domainesia/backups/<domain>/<timestamp>.json
 ```
 
 Supported record types in the CLI parser:
@@ -214,9 +237,11 @@ Under `--json`, errors are machine-readable and should not include credentials.
 
 ## Safety Notes
 
-- Do not commit `~/.domainesia`, cookies, HAR files, or local env files.
+- Do not commit `~/.domainesia`, cookies, HAR files, backups, or local env files.
 - DNS write commands are dry-run by default.
 - Live writes require `--live`.
+- Live DNS writes require `--confirm <fqdn>`.
+- Live DNS writes create a pre-change backup under `~/.domainesia/backups`.
 - Always run `dns list` after a live write.
 - Avoid raw non-GET requests; add a narrow command instead.
 
