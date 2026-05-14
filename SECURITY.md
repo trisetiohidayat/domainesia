@@ -51,7 +51,10 @@ Use `auth validate` before write sessions and `auth logout` when finished on sha
 ```bash
 domainesia --json auth validate
 domainesia --json auth logout
+domainesia --json auth logout --all
 ```
+
+Endpoint-driven login and generic endpoint-driven DNS mode are experimental and disabled unless `DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1` is set.
 
 ## Reporting Issues
 

@@ -235,6 +235,7 @@ fn cmd_init(opts: &Opts) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create config directory: {e}"))?;
+        set_owner_only_dir_permissions(parent)?;
     }
     let cookie = path
         .parent()
@@ -246,7 +247,7 @@ fn cmd_init(opts: &Opts) -> Result<(), String> {
         "DOMAINESIA_BASE_URL={}\nDOMAINESIA_DEFAULT_DOMAIN={}\nDOMAINESIA_COOKIE_JAR={}\n",
         base_url, domain, cookie
     );
-    fs::write(&path, content).map_err(|e| format!("failed to write config: {e}"))?;
+    write_owner_only_file(&path, content.as_bytes())?;
     emit_ok(
         opts,
         "init",
@@ -352,13 +353,26 @@ fn cmd_auth_logout(opts: &Opts) -> Result<(), String> {
     if existed {
         fs::remove_file(&cookie_jar).map_err(|e| format!("failed to remove cookie jar: {e}"))?;
     }
+    let profile_dir = value_after(&opts.args, "--profile-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_browser_profile_path);
+    let remove_profile = has_flag(&opts.args, "--all") || has_flag(&opts.args, "--profile");
+    let profile_removed = if remove_profile && profile_dir.exists() {
+        fs::remove_dir_all(&profile_dir)
+            .map_err(|e| format!("failed to remove browser profile: {e}"))?;
+        true
+    } else {
+        false
+    };
     emit_ok(
         opts,
         "auth logout",
         &format!(
-            "{{\"cookie_jar\":\"{}\",\"removed\":{}}}",
+            "{{\"cookie_jar\":\"{}\",\"removed\":{},\"profile_dir\":\"{}\",\"profile_removed\":{}}}",
             json_escape(&cookie_jar.display().to_string()),
-            existed
+            existed,
+            json_escape(&profile_dir.display().to_string()),
+            profile_removed
         ),
     );
     Ok(())
@@ -386,7 +400,7 @@ fn cmd_auth_browser_login(opts: &Opts) -> Result<(), String> {
         .map(PathBuf::from)
         .unwrap_or_else(default_browser_profile_path);
     let script_path = runtime_script_path()?;
-    fs::write(&script_path, CDP_CAPTURE_JS)
+    write_owner_only_file(&script_path, CDP_CAPTURE_JS.as_bytes())
         .map_err(|e| format!("failed to write browser capture helper: {e}"))?;
     let output = Command::new("node")
         .arg(&script_path)
@@ -432,6 +446,7 @@ fn cmd_auth_import_cookies(opts: &Opts) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create cookie directory: {e}"))?;
+        set_owner_only_dir_permissions(parent)?;
     }
     fs::copy(source, &target).map_err(|e| format!("failed to import cookies: {e}"))?;
     set_owner_only_permissions(&target)?;
@@ -483,6 +498,7 @@ fn cmd_auth_configure(opts: &Opts) -> Result<(), String> {
 }
 
 fn cmd_auth_login(opts: &Opts) -> Result<(), String> {
+    ensure_experimental_enabled("auth login")?;
     let config = Config::load();
     let live = has_flag(&opts.args, "--live");
     let endpoint = value_after(&opts.args, "--endpoint")
@@ -521,6 +537,7 @@ fn cmd_auth_login(opts: &Opts) -> Result<(), String> {
     if let Some(parent) = cookie_jar.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create cookie directory: {e}"))?;
+        set_owner_only_dir_permissions(parent)?;
     }
     let mut password = String::new();
     io::stdin()
@@ -567,22 +584,18 @@ fn cmd_auth_login(opts: &Opts) -> Result<(), String> {
         .map_err(|e| format!("failed to execute curl: {e}"))?;
     drop(password);
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!("login request failed: {}{}", stderr, stdout));
+        return Err(safe_curl_error("login request failed", &output));
     }
     set_owner_only_permissions(&cookie_jar)?;
     let cookie_string = cookie_jar.display().to_string();
     upsert_config_values(&[("DOMAINESIA_COOKIE_JAR", cookie_string.as_str())])?;
-    let response = String::from_utf8_lossy(&output.stdout);
     emit_ok(
         opts,
         "auth login",
         &format!(
-            "{{\"mode\":\"live\",\"cookie_jar\":\"{}\",\"response_bytes\":{},\"response_preview\":\"{}\"}}",
+            "{{\"mode\":\"live\",\"cookie_jar\":\"{}\",\"response_bytes\":{}}}",
             json_escape(&cookie_jar.display().to_string()),
-            response.len(),
-            json_escape(&response.chars().take(300).collect::<String>())
+            output.stdout.len()
         ),
     );
     Ok(())
@@ -774,6 +787,7 @@ fn cmd_dns_add(opts: &Opts) -> Result<(), String> {
     {
         return cmd_dns_form_add(opts);
     }
+    ensure_experimental_enabled("endpoint-driven dns add")?;
     let config = Config::load();
     let record = parse_record(&opts.args)?;
     let live = has_flag(&opts.args, "--live");
@@ -828,18 +842,15 @@ fn cmd_dns_add(opts: &Opts) -> Result<(), String> {
         .output()
         .map_err(|e| format!("failed to execute curl: {e}"))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!("live request failed: {}{}", stderr, stdout));
+        return Err(safe_curl_error("live request failed", &output));
     }
-    let response = String::from_utf8_lossy(&output.stdout);
     emit_ok(
         opts,
         "dns add",
         &format!(
-            "{{\"mode\":\"live\",\"record\":{},\"response_preview\":\"{}\"}}",
+            "{{\"mode\":\"live\",\"record\":{},\"response_bytes\":{}}}",
             record_json(&record),
-            json_escape(response.trim())
+            output.stdout.len()
         ),
     );
     Ok(())
@@ -967,18 +978,14 @@ fn cmd_raw(opts: &Opts) -> Result<(), String> {
     if method != "get" {
         return Err("only raw get is supported without explicit DNS command".to_string());
     }
-    if !url.starts_with("https://my.domainesia.com")
-        && !url.starts_with("https://www.domainesia.com")
-    {
-        return Err("raw get is restricted to domainesia.com URLs".to_string());
-    }
+    let url = absolute_domainesia_url(url)?;
     let config = Config::load();
     let mut command = Command::new("curl");
     command
         .arg("--silent")
         .arg("--show-error")
         .arg("--fail")
-        .arg(url);
+        .arg(&url);
     if let Some(cookie_jar) = config.get("DOMAINESIA_COOKIE_JAR") {
         if Path::new(cookie_jar).is_file() {
             command.arg("--cookie").arg(cookie_jar);
@@ -988,17 +995,15 @@ fn cmd_raw(opts: &Opts) -> Result<(), String> {
         .output()
         .map_err(|e| format!("failed to execute curl: {e}"))?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        return Err(safe_curl_error("raw GET failed", &output));
     }
-    let response = String::from_utf8_lossy(&output.stdout);
     emit_ok(
         opts,
         "raw get",
         &format!(
-            "{{\"url\":\"{}\",\"bytes\":{},\"preview\":\"{}\"}}",
-            json_escape(url),
-            response.len(),
-            json_escape(&response.chars().take(800).collect::<String>())
+            "{{\"url\":\"{}\",\"bytes\":{}}}",
+            json_escape(&url),
+            output.stdout.len()
         ),
     );
     Ok(())
@@ -1203,6 +1208,7 @@ fn runtime_script_path() -> Result<PathBuf, String> {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let dir = PathBuf::from(home).join(".domainesia");
     fs::create_dir_all(&dir).map_err(|e| format!("failed to create runtime directory: {e}"))?;
+    set_owner_only_dir_permissions(&dir)?;
     Ok(dir.join("cdp-cookie-capture.mjs"))
 }
 
@@ -1229,6 +1235,7 @@ fn upsert_config_values(updates: &[(&str, &str)]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create config directory: {e}"))?;
+        set_owner_only_dir_permissions(parent)?;
     }
     let existing = fs::read_to_string(&path).unwrap_or_default();
     let mut values = BTreeMap::new();
@@ -1257,7 +1264,7 @@ fn upsert_config_values(updates: &[(&str, &str)]) -> Result<(), String> {
             content.push('\n');
         }
     }
-    fs::write(&path, content).map_err(|e| format!("failed to write config: {e}"))?;
+    write_owner_only_file(&path, content.as_bytes())?;
     Ok(())
 }
 
@@ -1270,6 +1277,22 @@ fn set_owner_only_permissions(path: &Path) -> Result<(), String> {
     }
     let _ = path;
     Ok(())
+}
+
+fn set_owner_only_dir_permissions(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let permissions = fs::Permissions::from_mode(0o700);
+        fs::set_permissions(path, permissions)
+            .map_err(|e| format!("failed to lock down directory permissions: {e}"))?;
+    }
+    let _ = path;
+    Ok(())
+}
+
+fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    fs::write(path, bytes).map_err(|e| format!("failed to write file: {e}"))?;
+    set_owner_only_permissions(path)
 }
 
 fn http_get_path(path_or_url: &str) -> Result<String, String> {
@@ -1292,11 +1315,7 @@ fn http_get_path(path_or_url: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("failed to execute curl: {e}"))?;
     if !output.status.success() {
-        return Err(format!(
-            "GET failed: {}{}",
-            String::from_utf8_lossy(&output.stderr),
-            String::from_utf8_lossy(&output.stdout)
-        ));
+        return Err(safe_curl_error("GET failed", &output));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -1329,23 +1348,57 @@ fn http_post_form(path_or_url: &str, body: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("failed to execute curl: {e}"))?;
     if !output.status.success() {
-        return Err(format!(
-            "POST failed: {}{}",
-            String::from_utf8_lossy(&output.stderr),
-            String::from_utf8_lossy(&output.stdout)
-        ));
+        return Err(safe_curl_error("POST failed", &output));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn absolute_domainesia_url(path_or_url: &str) -> Result<String, String> {
-    if path_or_url.starts_with("https://my.domainesia.com") {
-        Ok(path_or_url.to_string())
-    } else if path_or_url.starts_with('/') {
+    if path_or_url.starts_with('/') {
         Ok(format!("https://my.domainesia.com{path_or_url}"))
+    } else if is_exact_mydomainesia_url(path_or_url) {
+        Ok(path_or_url.to_string())
     } else {
         Err("URL/path must target my.domainesia.com".to_string())
     }
+}
+
+fn is_exact_mydomainesia_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://my.domainesia.com") else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#')
+}
+
+fn safe_curl_error(context: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr_summary = sanitize_curl_stderr(&stderr);
+    format!(
+        "{}: status={}, stderr=\"{}\", stdout_bytes={}",
+        context,
+        output
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "signal".to_string()),
+        json_escape(&stderr_summary),
+        output.stdout.len()
+    )
+}
+
+fn sanitize_curl_stderr(stderr: &str) -> String {
+    stderr
+        .lines()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            !lower.contains("cookie")
+                && !lower.contains("token")
+                && !lower.contains("authorization")
+                && !lower.contains("password")
+        })
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn open_url(url: &str) -> bool {
@@ -1552,9 +1605,14 @@ fn dns_export_json(domain: &DomainInfo, records: &[DnsRecord]) -> String {
 fn write_dns_backup(domain: &DomainInfo, records: &[DnsRecord]) -> Result<PathBuf, String> {
     let dir = default_backup_dir().join(&domain.domain);
     fs::create_dir_all(&dir).map_err(|e| format!("failed to create backup directory: {e}"))?;
+    if let Some(parent) = dir.parent() {
+        set_owner_only_dir_permissions(parent)?;
+    }
+    set_owner_only_dir_permissions(&dir)?;
     let path = dir.join(format!("{}.json", timestamp_compact()));
     let content = dns_export_json(domain, records);
-    fs::write(&path, content).map_err(|e| format!("failed to write DNS backup: {e}"))?;
+    write_owner_only_file(&path, content.as_bytes())
+        .map_err(|e| format!("failed to write DNS backup: {e}"))?;
     Ok(path)
 }
 
@@ -1616,7 +1674,7 @@ fn fqdn(record: &DnsRecord) -> String {
 
 fn print_help() {
     println!(
-        "domainesia {VERSION}\n\nUSAGE:\n  domainesia [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove local cookie jar\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Endpoint-driven login; dry-run by default\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require --confirm <fqdn>\n"
+        "domainesia {VERSION}\n\nUSAGE:\n  domainesia [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove cookie jar; use --all for Chrome profile\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Experimental endpoint-driven login\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require --confirm <fqdn>\n"
     );
 }
 
@@ -1754,6 +1812,19 @@ fn command_exists(name: &str) -> bool {
         .is_some()
 }
 
+fn ensure_experimental_enabled(feature: &str) -> Result<(), String> {
+    if env::var("DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "{feature} is experimental; set DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1 to enable"
+        ))
+    }
+}
+
 fn json_escape(input: &str) -> String {
     let mut out = String::new();
     for ch in input.chars() {
@@ -1878,5 +1949,18 @@ mod tests {
         assert!(json.contains("\"due_date\":\"08/01/2026\""));
         assert!(json.contains("\"total\":\"Rp 10.000,00\""));
         assert!(json.contains("\"status\":\"Paid\""));
+    }
+
+    #[test]
+    fn validates_exact_mydomainesia_urls() {
+        assert!(is_exact_mydomainesia_url("https://my.domainesia.com"));
+        assert!(is_exact_mydomainesia_url(
+            "https://my.domainesia.com/clientarea.php"
+        ));
+        assert!(is_exact_mydomainesia_url("https://my.domainesia.com?x=1"));
+        assert!(!is_exact_mydomainesia_url(
+            "https://my.domainesia.com.evil.example"
+        ));
+        assert!(!is_exact_mydomainesia_url("http://my.domainesia.com"));
     }
 }

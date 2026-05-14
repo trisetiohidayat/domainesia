@@ -100,6 +100,7 @@ Logout removes the local cookie jar:
 
 ```bash
 domainesia --json auth logout
+domainesia --json auth logout --all
 ```
 
 Endpoint-driven login is available only after a login endpoint is confirmed:
@@ -109,7 +110,7 @@ domainesia --json auth configure --login-endpoint https://captured-login-endpoin
 printf '%s\n' "$DOMAINESIA_PASSWORD" | domainesia --json auth login --email you@example.com --password-stdin --live
 ```
 
-`auth login` is a dry-run unless `--live` is present. The password must come from stdin so it is not stored in shell history.
+`auth login` is experimental and disabled unless `DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1` is set. It is a dry-run unless `--live` is present. The password must come from stdin so it is not stored in shell history.
 
 ## Command Overview
 
@@ -244,6 +245,7 @@ Under `--json`, errors are machine-readable and should not include credentials.
 - Live DNS writes create a pre-change backup under `~/.domainesia/backups`.
 - Always run `dns list` after a live write.
 - Avoid raw non-GET requests; add a narrow command instead.
+- Endpoint-driven login/generic DNS endpoint mode require `DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1`.
 
 ## Development
 
