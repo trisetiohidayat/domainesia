@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -287,14 +287,24 @@ fn cmd_auth_status(opts: &Opts) -> Result<(), String> {
         .and_then(|p| fs::metadata(p).ok())
         .map(|m| m.len())
         .unwrap_or(0);
+    let cookie_audit = cookie_jar
+        .map(|p| path_security_audit_json(Path::new(p), PathKind::File, false))
+        .unwrap_or_else(|| "null".to_string());
+    let domainesia_dir = config
+        .path
+        .parent()
+        .map(|p| path_security_audit_json(p, PathKind::Dir, false))
+        .unwrap_or_else(|| "null".to_string());
     let body = format!(
-        "{{\"base_url\":\"{}\",\"cookie_jar_configured\":{},\"cookie_jar_readable\":{},\"cookie_jar_bytes\":{},\"login_endpoint_configured\":{},\"csrf_token_configured\":{}}}",
+        "{{\"base_url\":\"{}\",\"cookie_jar_configured\":{},\"cookie_jar_readable\":{},\"cookie_jar_bytes\":{},\"login_endpoint_configured\":{},\"csrf_token_configured\":{},\"cookie_audit\":{},\"domainesia_dir_audit\":{}}}",
         json_escape(config.get("DOMAINESIA_BASE_URL").unwrap_or("https://my.domainesia.com")),
         cookie_jar.is_some(),
         cookie_readable,
         cookie_size,
         config.get("DOMAINESIA_LOGIN_ENDPOINT").is_some(),
-        config.get("DOMAINESIA_CSRF_TOKEN").is_some()
+        config.get("DOMAINESIA_CSRF_TOKEN").is_some(),
+        cookie_audit,
+        domainesia_dir
     );
     emit_ok(opts, "auth status", &body);
     Ok(())
@@ -356,7 +366,7 @@ fn cmd_auth_logout(opts: &Opts) -> Result<(), String> {
     let profile_dir = value_after(&opts.args, "--profile-dir")
         .map(PathBuf::from)
         .unwrap_or_else(default_browser_profile_path);
-    let remove_profile = has_flag(&opts.args, "--all") || has_flag(&opts.args, "--profile");
+    let remove_profile = !has_flag(&opts.args, "--cookie-only");
     let profile_removed = if remove_profile && profile_dir.exists() {
         fs::remove_dir_all(&profile_dir)
             .map_err(|e| format!("failed to remove browser profile: {e}"))?;
@@ -812,6 +822,7 @@ fn cmd_dns_add(opts: &Opts) -> Result<(), String> {
     if !Path::new(cookie_jar).is_file() {
         return Err("configured cookie jar is not readable".to_string());
     }
+    ensure_secure_path(Path::new(cookie_jar), PathKind::File)?;
     if !command_exists("curl") {
         return Err("curl is required for live requests".to_string());
     }
@@ -1105,6 +1116,7 @@ fn submit_or_preview_dns_form(
         );
         return Ok(());
     }
+    ensure_live_writes_enabled()?;
     if let Some(record) = &changed {
         let expected = fqdn(record);
         let confirm = value_after(&opts.args, "--confirm")
@@ -1204,6 +1216,12 @@ fn default_backup_dir() -> PathBuf {
     PathBuf::from(home).join(".domainesia").join("backups")
 }
 
+#[derive(Clone, Copy)]
+enum PathKind {
+    File,
+    Dir,
+}
+
 fn runtime_script_path() -> Result<PathBuf, String> {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let dir = PathBuf::from(home).join(".domainesia");
@@ -1228,6 +1246,136 @@ fn timestamp_compact() -> String {
         })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown-time".to_string())
+}
+
+fn reject_symlink(path: &Path) -> Result<(), String> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!("refusing to use symlink path: {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_secure_path(path: &Path, kind: PathKind) -> Result<(), String> {
+    let audit = path_security_audit(path, kind, true);
+    if audit.ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "insecure path {}: {}",
+            path.display(),
+            audit.issues.join(", ")
+        ))
+    }
+}
+
+struct PathSecurityAudit {
+    exists: bool,
+    ok: bool,
+    issues: Vec<String>,
+    mode: Option<u32>,
+    uid_matches: Option<bool>,
+    is_symlink: bool,
+}
+
+fn path_security_audit(path: &Path, kind: PathKind, require_exists: bool) -> PathSecurityAudit {
+    let mut issues = Vec::new();
+    let metadata = fs::symlink_metadata(path);
+    let Ok(metadata) = metadata else {
+        if require_exists {
+            issues.push("missing".to_string());
+        }
+        return PathSecurityAudit {
+            exists: false,
+            ok: issues.is_empty(),
+            issues,
+            mode: None,
+            uid_matches: None,
+            is_symlink: false,
+        };
+    };
+    let is_symlink = metadata.file_type().is_symlink();
+    if is_symlink {
+        issues.push("symlink".to_string());
+    }
+    match kind {
+        PathKind::File if !metadata.is_file() => issues.push("not_file".to_string()),
+        PathKind::Dir if !metadata.is_dir() => issues.push("not_dir".to_string()),
+        _ => {}
+    }
+    #[cfg(unix)]
+    let mode = {
+        let mode = metadata.permissions().mode() & 0o777;
+        let expected = match kind {
+            PathKind::File => 0o600,
+            PathKind::Dir => 0o700,
+        };
+        if mode != expected {
+            issues.push(format!("mode_{mode:o}_expected_{expected:o}"));
+        }
+        Some(mode)
+    };
+    #[cfg(not(unix))]
+    let mode = None;
+
+    #[cfg(unix)]
+    let uid_matches = {
+        let current_uid = current_uid();
+        let matches = current_uid.map(|uid| uid == metadata.uid());
+        if matches == Some(false) {
+            issues.push("owner_mismatch".to_string());
+        }
+        matches
+    };
+    #[cfg(not(unix))]
+    let uid_matches = None;
+
+    PathSecurityAudit {
+        exists: true,
+        ok: issues.is_empty(),
+        issues,
+        mode,
+        uid_matches,
+        is_symlink,
+    }
+}
+
+fn path_security_audit_json(path: &Path, kind: PathKind, require_exists: bool) -> String {
+    let audit = path_security_audit(path, kind, require_exists);
+    let issues = audit
+        .issues
+        .iter()
+        .map(|issue| format!("\"{}\"", json_escape(issue)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mode = audit
+        .mode
+        .map(|mode| format!("\"{:o}\"", mode))
+        .unwrap_or_else(|| "null".to_string());
+    let uid_matches = audit
+        .uid_matches
+        .map(|matches| matches.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    format!(
+        "{{\"path\":\"{}\",\"exists\":{},\"ok\":{},\"mode\":{},\"uid_matches\":{},\"is_symlink\":{},\"issues\":[{}]}}",
+        json_escape(&path.display().to_string()),
+        audit.exists,
+        audit.ok,
+        mode,
+        uid_matches,
+        audit.is_symlink,
+        issues
+    )
+}
+
+#[cfg(unix)]
+fn current_uid() -> Option<u32> {
+    let output = Command::new("id").arg("-u").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
 fn upsert_config_values(updates: &[(&str, &str)]) -> Result<(), String> {
@@ -1269,6 +1417,7 @@ fn upsert_config_values(updates: &[(&str, &str)]) -> Result<(), String> {
 }
 
 fn set_owner_only_permissions(path: &Path) -> Result<(), String> {
+    reject_symlink(path)?;
     #[cfg(unix)]
     {
         let permissions = fs::Permissions::from_mode(0o600);
@@ -1280,6 +1429,7 @@ fn set_owner_only_permissions(path: &Path) -> Result<(), String> {
 }
 
 fn set_owner_only_dir_permissions(path: &Path) -> Result<(), String> {
+    reject_symlink(path)?;
     #[cfg(unix)]
     {
         let permissions = fs::Permissions::from_mode(0o700);
@@ -1291,7 +1441,28 @@ fn set_owner_only_dir_permissions(path: &Path) -> Result<(), String> {
 }
 
 fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    fs::write(path, bytes).map_err(|e| format!("failed to write file: {e}"))?;
+    if path.exists() {
+        reject_symlink(path)?;
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "target file has no parent directory".to_string())?;
+    reject_symlink(parent)?;
+    fs::create_dir_all(parent).map_err(|e| format!("failed to create parent directory: {e}"))?;
+    set_owner_only_dir_permissions(parent)?;
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("domainesia"),
+        std::process::id()
+    ));
+    if tmp.exists() {
+        reject_symlink(&tmp)?;
+    }
+    fs::write(&tmp, bytes).map_err(|e| format!("failed to write temp file: {e}"))?;
+    set_owner_only_permissions(&tmp)?;
+    fs::rename(&tmp, path).map_err(|e| format!("failed to atomically replace file: {e}"))?;
     set_owner_only_permissions(path)
 }
 
@@ -1303,6 +1474,7 @@ fn http_get_path(path_or_url: &str) -> Result<String, String> {
     if !Path::new(cookie_jar).is_file() {
         return Err("configured cookie jar is not readable".to_string());
     }
+    ensure_secure_path(Path::new(cookie_jar), PathKind::File)?;
     let url = absolute_domainesia_url(path_or_url)?;
     let output = Command::new("curl")
         .arg("--silent")
@@ -1328,6 +1500,7 @@ fn http_post_form(path_or_url: &str, body: &str) -> Result<String, String> {
     if !Path::new(cookie_jar).is_file() {
         return Err("configured cookie jar is not readable".to_string());
     }
+    ensure_secure_path(Path::new(cookie_jar), PathKind::File)?;
     let url = absolute_domainesia_url(path_or_url)?;
     let output = Command::new("curl")
         .arg("--silent")
@@ -1674,7 +1847,7 @@ fn fqdn(record: &DnsRecord) -> String {
 
 fn print_help() {
     println!(
-        "domainesia {VERSION}\n\nUSAGE:\n  domainesia [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove cookie jar; use --all for Chrome profile\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Experimental endpoint-driven login\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require --confirm <fqdn>\n"
+        "domainesia {VERSION}\n\nUSAGE:\n  domainesia [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove cookie jar and Chrome profile by default\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Experimental endpoint-driven login\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth logout [--cookie-only]\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require DOMAINESIA_ALLOW_LIVE_WRITES=1 and --confirm <fqdn>\n"
     );
 }
 
@@ -1822,6 +1995,17 @@ fn ensure_experimental_enabled(feature: &str) -> Result<(), String> {
         Err(format!(
             "{feature} is experimental; set DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1 to enable"
         ))
+    }
+}
+
+fn ensure_live_writes_enabled() -> Result<(), String> {
+    if env::var("DOMAINESIA_ALLOW_LIVE_WRITES")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        Ok(())
+    } else {
+        Err("live DNS writes require DOMAINESIA_ALLOW_LIVE_WRITES=1".to_string())
     }
 }
 

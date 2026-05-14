@@ -37,7 +37,7 @@ domainesia --json dns list --domain example.my.id
 Live DNS writes also require an exact confirmation guard:
 
 ```bash
-domainesia --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --live --confirm app.example.my.id
+DOMAINESIA_ALLOW_LIVE_WRITES=1 domainesia --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --live --confirm app.example.my.id
 ```
 
 Before every live DNS write, the CLI writes a pre-change backup under:
@@ -51,10 +51,11 @@ Use `auth validate` before write sessions and `auth logout` when finished on sha
 ```bash
 domainesia --json auth validate
 domainesia --json auth logout
-domainesia --json auth logout --all
+domainesia --json auth logout --cookie-only
 ```
 
 Endpoint-driven login and generic endpoint-driven DNS mode are experimental and disabled unless `DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1` is set.
+Live DNS writes are disabled unless `DOMAINESIA_ALLOW_LIVE_WRITES=1` is set.
 
 ## Reporting Issues
 

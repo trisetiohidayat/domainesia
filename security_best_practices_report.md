@@ -1,6 +1,6 @@
 # Security Best Practices Report
 
-Executive summary: the CLI already has strong baseline controls for a personal/internal tool: dry-run defaults, explicit `--live`, exact `--confirm <fqdn>` for DNS writes, cookie file permission hardening, and CI. The main remaining production risks are around accidental sensitive output, permissive URL validation, local auth-helper hardening, and cleanup of browser-session material.
+Executive summary: the CLI already has strong baseline controls for a personal/internal tool: dry-run defaults, explicit `--live`, exact `--confirm <fqdn>` for DNS writes, cookie file permission hardening, and CI. The initial review found risks around accidental sensitive output, permissive URL validation, local auth-helper hardening, and cleanup of browser-session material. These findings were addressed in follow-up hardening commits.
 
 ## High Severity
 
@@ -133,3 +133,12 @@ Recommendation:
 3. Harden config, backup, runtime helper, and directory permissions.
 4. Extend `auth logout` to remove the dedicated Chrome profile or add `--all`.
 5. Feature-gate generic endpoint-driven auth/DNS paths.
+
+## Remediation Status
+
+- H-1 remediated: response body previews and full curl stdout were removed from error/live output.
+- M-1 remediated: URL validation now accepts only exact `https://my.domainesia.com` host forms or relative paths.
+- M-2 remediated: config/helper/backup files use owner-only permissions, local directories use owner-only permissions, symlinks are rejected, and writes are atomic.
+- M-4 remediated: `auth logout` removes the dedicated Chrome profile by default; `--cookie-only` keeps the profile.
+- L-1 remediated: endpoint-driven login and generic DNS endpoint mode require `DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1`.
+- Additional hardening: live DNS writes require `DOMAINESIA_ALLOW_LIVE_WRITES=1` in addition to `--live` and `--confirm <fqdn>`.
