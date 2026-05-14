@@ -1,4 +1,4 @@
-# domainesia
+# domainesia-cli
 
 Agent-friendly CLI for MyDomaiNesia account and DNS workflows.
 
@@ -47,22 +47,22 @@ The Rust binary itself has no third-party crate dependencies.
 ## Install
 
 ```bash
-git clone https://github.com/trisetiohidayat/domainesia.git
-cd domainesia
+git clone https://github.com/trisetiohidayat/domainesia-cli.git
+cd domainesia-cli
 make install-local
 ```
 
 This installs the binary to:
 
 ```text
-~/.local/bin/domainesia
+~/.local/bin/domainesia-cli
 ```
 
 Verify:
 
 ```bash
-domainesia --help
-domainesia --json doctor
+domainesia-cli --help
+domainesia-cli --json doctor
 ```
 
 ## Configuration
@@ -70,7 +70,7 @@ domainesia --json doctor
 Initialize local config:
 
 ```bash
-domainesia --json init --domain example.my.id
+domainesia-cli --json init --domain example.my.id
 ```
 
 Config is stored outside the repo:
@@ -98,9 +98,9 @@ The CLI never prints cookie values or full tokens in `doctor`/`auth status`.
 Preferred auth path:
 
 ```bash
-domainesia --json auth browser-login --timeout-seconds 180
-domainesia --json auth status
-domainesia --json auth validate
+domainesia-cli --json auth browser-login --timeout-seconds 180
+domainesia-cli --json auth status
+domainesia-cli --json auth validate
 ```
 
 `auth browser-login` opens a dedicated Chrome profile, waits for you to log in on the official MyDomaiNesia page, captures DomaiNesia cookies through Chrome DevTools Protocol, and writes a Netscape cookie jar to:
@@ -112,22 +112,22 @@ domainesia --json auth validate
 Manual cookie import:
 
 ```bash
-domainesia auth open-login
-domainesia --json auth import-cookies --from ~/Downloads/my.domainesia.cookies.txt
+domainesia-cli auth open-login
+domainesia-cli --json auth import-cookies --from ~/Downloads/my.domainesia.cookies.txt
 ```
 
 Logout removes the local cookie jar:
 
 ```bash
-domainesia --json auth logout
-domainesia --json auth logout --cookie-only
+domainesia-cli --json auth logout
+domainesia-cli --json auth logout --cookie-only
 ```
 
 Endpoint-driven login is available only after a login endpoint is confirmed:
 
 ```bash
-domainesia --json auth configure --login-endpoint https://captured-login-endpoint
-printf '%s\n' "$DOMAINESIA_PASSWORD" | domainesia --json auth login --email you@example.com --password-stdin --live
+domainesia-cli --json auth configure --login-endpoint https://captured-login-endpoint
+printf '%s\n' "$DOMAINESIA_PASSWORD" | domainesia-cli --json auth login --email you@example.com --password-stdin --live
 ```
 
 `auth login` is experimental and disabled unless `DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1` is set. It is a dry-run unless `--live` is present. The password must come from stdin so it is not stored in shell history.
@@ -135,23 +135,23 @@ printf '%s\n' "$DOMAINESIA_PASSWORD" | domainesia --json auth login --email you@
 ## Command Overview
 
 ```bash
-domainesia --json features list
-domainesia --json features forms --path '/clientarea.php?action=domaindns&domainid=123456'
+domainesia-cli --json features list
+domainesia-cli --json features forms --path '/clientarea.php?action=domaindns&domainid=123456'
 
-domainesia --json domains list
-domainesia --json domains resolve --domain example.my.id
-domainesia --json domains detail --domain example.my.id
+domainesia-cli --json domains list
+domainesia-cli --json domains resolve --domain example.my.id
+domainesia-cli --json domains detail --domain example.my.id
 
-domainesia --json dns list --domain example.my.id
-domainesia --json dns export --domain example.my.id --output ./dns-backup.json
-domainesia --json dns plan-add --domain example.my.id --name app --type A --value 192.0.2.10
-domainesia --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --dry-run
-DOMAINESIA_ALLOW_LIVE_WRITES=1 domainesia --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --live --confirm app.example.my.id
-domainesia --json dns update --domain example.my.id --name app --value 192.0.2.11 --dry-run
-domainesia --json dns delete --domain example.my.id --name app --dry-run
+domainesia-cli --json dns list --domain example.my.id
+domainesia-cli --json dns export --domain example.my.id --output ./dns-backup.json
+domainesia-cli --json dns plan-add --domain example.my.id --name app --type A --value 192.0.2.10
+domainesia-cli --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --dry-run
+DOMAINESIA_ALLOW_LIVE_WRITES=1 domainesia-cli --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --live --confirm app.example.my.id
+domainesia-cli --json dns update --domain example.my.id --name app --value 192.0.2.11 --dry-run
+domainesia-cli --json dns delete --domain example.my.id --name app --dry-run
 
-domainesia --json invoices list
-domainesia --json raw get https://my.domainesia.com/clientarea.php
+domainesia-cli --json invoices list
+domainesia-cli --json raw get https://my.domainesia.com/clientarea.php
 ```
 
 ## DNS Management
@@ -159,19 +159,19 @@ domainesia --json raw get https://my.domainesia.com/clientarea.php
 List current records:
 
 ```bash
-domainesia --json dns list --domain example.my.id
+domainesia-cli --json dns list --domain example.my.id
 ```
 
 Export current records:
 
 ```bash
-domainesia --json dns export --domain example.my.id --output ./dns-backup.json
+domainesia-cli --json dns export --domain example.my.id --output ./dns-backup.json
 ```
 
 Add a record safely:
 
 ```bash
-DOMAINESIA_ALLOW_LIVE_WRITES=1 domainesia --json dns add \
+DOMAINESIA_ALLOW_LIVE_WRITES=1 domainesia-cli --json dns add \
   --domain example.my.id \
   --name app \
   --type A \
@@ -182,7 +182,7 @@ DOMAINESIA_ALLOW_LIVE_WRITES=1 domainesia --json dns add \
 Apply live:
 
 ```bash
-domainesia --json dns add \
+domainesia-cli --json dns add \
   --domain example.my.id \
   --name app \
   --type A \
@@ -194,7 +194,7 @@ domainesia --json dns add \
 Verify:
 
 ```bash
-domainesia --json dns list --domain example.my.id
+domainesia-cli --json dns list --domain example.my.id
 ```
 
 Before every live DNS write, the CLI writes a JSON backup of the current DNS state under:
@@ -237,7 +237,7 @@ The MyDomaiNesia form also exposes `MXE`, `SRV`, `URL`, and `FRAME`; add narrow 
 Use `features forms` to inspect form shape before implementing a dedicated write command:
 
 ```bash
-domainesia --json features forms --path '/clientarea.php?action=domaindetails&id=123456'
+domainesia-cli --json features forms --path '/clientarea.php?action=domaindetails&id=123456'
 ```
 
 ## JSON Contract
@@ -281,9 +281,9 @@ Smoke test from another directory:
 
 ```bash
 cd /tmp
-domainesia --json doctor
-domainesia --json auth status
-domainesia --json features list
+domainesia-cli --json doctor
+domainesia-cli --json auth status
+domainesia-cli --json features list
 ```
 
 ## Dependency Decision Record

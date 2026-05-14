@@ -273,7 +273,7 @@ fn cmd_auth(opts: &Opts) -> Result<(), String> {
         "configure" => cmd_auth_configure(opts),
         "login" => cmd_auth_login(opts),
         _ => Err(
-            "usage: domainesia auth <status|validate|logout|open-login|import-cookies|configure|login> ..."
+            "usage: domainesia-cli auth <status|validate|logout|open-login|import-cookies|configure|login> ..."
                 .to_string(),
         ),
     }
@@ -705,7 +705,7 @@ fn cmd_features(opts: &Opts) -> Result<(), String> {
             );
             Ok(())
         }
-        _ => Err("usage: domainesia features <list|forms> [--path <path>]".to_string()),
+        _ => Err("usage: domainesia-cli features <list|forms> [--path <path>]".to_string()),
     }
 }
 
@@ -753,7 +753,9 @@ fn cmd_domains(opts: &Opts) -> Result<(), String> {
             );
             Ok(())
         }
-        _ => Err("usage: domainesia domains <list|resolve|detail> [--domain <domain>]".to_string()),
+        _ => Err(
+            "usage: domainesia-cli domains <list|resolve|detail> [--domain <domain>]".to_string(),
+        ),
     }
 }
 
@@ -770,7 +772,7 @@ fn cmd_invoices(opts: &Opts) -> Result<(), String> {
             );
             Ok(())
         }
-        _ => Err("usage: domainesia invoices list".to_string()),
+        _ => Err("usage: domainesia-cli invoices list".to_string()),
     }
 }
 
@@ -787,7 +789,9 @@ fn cmd_dns(opts: &Opts) -> Result<(), String> {
         "add" => cmd_dns_add(opts),
         "update" => cmd_dns_update(opts),
         "delete" => cmd_dns_delete(opts),
-        _ => Err("usage: domainesia dns <list|export|plan-add|add|update|delete> ...".to_string()),
+        _ => Err(
+            "usage: domainesia-cli dns <list|export|plan-add|add|update|delete> ...".to_string(),
+        ),
     }
 }
 
@@ -961,7 +965,7 @@ fn cmd_endpoint(opts: &Opts) -> Result<(), String> {
             let path = opts
                 .args
                 .get(2)
-                .ok_or("usage: domainesia endpoint import-har <path.har>")?;
+                .ok_or("usage: domainesia-cli endpoint import-har <path.har>")?;
             let text = fs::read_to_string(path).map_err(|e| format!("failed to read HAR: {e}"))?;
             let candidates = extract_endpoint_candidates(&text);
             let items = candidates
@@ -979,13 +983,16 @@ fn cmd_endpoint(opts: &Opts) -> Result<(), String> {
             );
             Ok(())
         }
-        _ => Err("usage: domainesia endpoint import-har <path.har>".to_string()),
+        _ => Err("usage: domainesia-cli endpoint import-har <path.har>".to_string()),
     }
 }
 
 fn cmd_raw(opts: &Opts) -> Result<(), String> {
     let method = opts.args.get(1).map(String::as_str).unwrap_or("");
-    let url = opts.args.get(2).ok_or("usage: domainesia raw get <url>")?;
+    let url = opts
+        .args
+        .get(2)
+        .ok_or("usage: domainesia-cli raw get <url>")?;
     if method != "get" {
         return Err("only raw get is supported without explicit DNS command".to_string());
     }
@@ -1454,7 +1461,7 @@ fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         ".{}.tmp-{}",
         path.file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("domainesia"),
+            .unwrap_or("domainesia-cli"),
         std::process::id()
     ));
     if tmp.exists() {
@@ -1847,7 +1854,7 @@ fn fqdn(record: &DnsRecord) -> String {
 
 fn print_help() {
     println!(
-        "domainesia {VERSION}\n\nUSAGE:\n  domainesia [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove cookie jar and Chrome profile by default\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Experimental endpoint-driven login\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth logout [--cookie-only]\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require DOMAINESIA_ALLOW_LIVE_WRITES=1 and --confirm <fqdn>\n"
+        "domainesia-cli {VERSION}\n\nUSAGE:\n  domainesia-cli [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove cookie jar and Chrome profile by default\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Experimental endpoint-driven login\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth logout [--cookie-only]\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require DOMAINESIA_ALLOW_LIVE_WRITES=1 and --confirm <fqdn>\n"
     );
 }
 

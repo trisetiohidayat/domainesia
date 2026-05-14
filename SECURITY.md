@@ -16,12 +16,12 @@ The repository ignores common local secret file names, but that is not a substit
 
 ## Auth Model
 
-Preferred auth is `domainesia auth browser-login`, which opens a dedicated Chrome profile and stores cookies under `~/.domainesia/cookies.txt`.
+Preferred auth is `domainesia-cli auth browser-login`, which opens a dedicated Chrome profile and stores cookies under `~/.domainesia/cookies.txt`.
 
 Endpoint-driven login is available for controlled environments, but passwords must be supplied through stdin:
 
 ```bash
-printf '%s\n' "$DOMAINESIA_PASSWORD" | domainesia auth login --email you@example.com --password-stdin --live
+printf '%s\n' "$DOMAINESIA_PASSWORD" | domainesia-cli auth login --email you@example.com --password-stdin --live
 ```
 
 ## Write Safety
@@ -31,13 +31,13 @@ Write commands are dry-run by default. Use `--live` only after reviewing the JSO
 DNS write commands fetch the current DNS Management form, preserve existing records, apply the requested change, then POST the full form. Verify after live writes:
 
 ```bash
-domainesia --json dns list --domain example.my.id
+domainesia-cli --json dns list --domain example.my.id
 ```
 
 Live DNS writes also require an exact confirmation guard:
 
 ```bash
-DOMAINESIA_ALLOW_LIVE_WRITES=1 domainesia --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --live --confirm app.example.my.id
+DOMAINESIA_ALLOW_LIVE_WRITES=1 domainesia-cli --json dns add --domain example.my.id --name app --type A --value 192.0.2.10 --live --confirm app.example.my.id
 ```
 
 Before every live DNS write, the CLI writes a pre-change backup under:
@@ -49,9 +49,9 @@ Before every live DNS write, the CLI writes a pre-change backup under:
 Use `auth validate` before write sessions and `auth logout` when finished on shared machines:
 
 ```bash
-domainesia --json auth validate
-domainesia --json auth logout
-domainesia --json auth logout --cookie-only
+domainesia-cli --json auth validate
+domainesia-cli --json auth logout
+domainesia-cli --json auth logout --cookie-only
 ```
 
 Endpoint-driven login and generic endpoint-driven DNS mode are experimental and disabled unless `DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1` is set.

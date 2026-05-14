@@ -14,5 +14,6 @@ fmt:
 
 install-local: build
 	mkdir -p "$(BINDIR)"
-	cp target/release/domainesia "$(BINDIR)/domainesia"
-	chmod +x "$(BINDIR)/domainesia"
+	cp target/release/domainesia-cli "$(BINDIR)/domainesia-cli"
+	chmod +x "$(BINDIR)/domainesia-cli"
+	rm -f "$(BINDIR)/domainesia"
