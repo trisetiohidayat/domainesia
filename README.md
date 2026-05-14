@@ -24,6 +24,16 @@ Use this software only with accounts and domains you are authorized to manage. Y
 
 When an official DomaiNesia API or supported integration is available for your use case, prefer that over web-session automation.
 
+## DomaiNesia Policy Notes
+
+This section is a practical risk note, not legal advice. Review the current DomaiNesia documents before using or publishing automation based on this project.
+
+- DomaiNesia's [Terms of Service](https://www.domainesia.com/tos/) states that use of DomaiNesia services is subject to its Terms of Service and Acceptable Use Policies. It also states that violations by someone using your DomaiNesia account may be treated as violations by you.
+- DomaiNesia's account terms state that users are responsible for keeping account credentials secure, recommend strong passwords and 2FA, and treat account activity as activity by the legitimate account owner. Do not share cookies, session files, passwords, HAR files, or captured browser profiles.
+- DomaiNesia's usage-limit section for hosting services warns against excessive or unreasonable resource usage and includes automated bots, massive data scraping, third-party service emulation, auto-refresh, auto-post, and similar schemes. This CLI is intended for low-volume, user-directed account administration only. Do not use it for scraping, polling loops, mass automation, bypassing UI protections, or workflows that can burden DomaiNesia systems.
+- DomaiNesia publicly describes REST API access as a reseller-domain feature on its [Reseller Domain](https://www.domainesia.com/reseller-domain/) page. This CLI does not claim to be that official API and should not be presented as a supported DomaiNesia integration.
+- If DomaiNesia support, policy, or an official API says a workflow should not be automated through MyDomaiNesia web sessions, do not use this CLI for that workflow.
+
 ## Requirements
 
 - macOS or Linux
