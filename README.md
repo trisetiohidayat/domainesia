@@ -14,6 +14,16 @@ The tool is designed for automation agents and shell users who need stable JSON 
 
 DomaiNesia's public API documentation is oriented around reseller/RNA usage. This CLI therefore works against the authenticated MyDomaiNesia web interface and does not assume a private customer API.
 
+## Unofficial Project And Responsible Use
+
+This project is an independent, unofficial CLI. It is not created, endorsed, sponsored, or maintained by DomaiNesia.
+
+The CLI automates authenticated MyDomaiNesia web workflows using a user-controlled session. DomaiNesia may change its interface, policies, or supported access methods at any time, and those changes may break this tool or make a workflow inappropriate for some accounts.
+
+Use this software only with accounts and domains you are authorized to manage. You are responsible for reviewing and complying with DomaiNesia's [Terms of Service](https://www.domainesia.com/tos/), acceptable use policies, and any applicable laws or organizational rules. The authors and contributors are not responsible for account actions, DNS changes, service disruption, policy violations, data loss, or other outcomes from using this tool.
+
+When an official DomaiNesia API or supported integration is available for your use case, prefer that over web-session automation.
+
 ## Requirements
 
 - macOS or Linux
