@@ -18,11 +18,21 @@ The repository ignores common local secret file names, but that is not a substit
 
 Preferred auth is `domainesia-cli auth browser-login`, which opens a dedicated Chrome profile and stores cookies under `~/.domainesia/cookies.txt`.
 
+For VPS or other systems without Chrome, prefer importing a Netscape cookie jar through stdin:
+
+```bash
+cat ~/.domainesia/cookies.txt | ssh user@vps 'domainesia-cli --json auth import-cookies --from-stdin'
+```
+
+Treat this as secret transfer. Use SSH or another encrypted channel, and never paste cookie contents into chat, logs, issues, or shell history.
+
 Endpoint-driven login is available for controlled environments, but passwords must be supplied through stdin:
 
 ```bash
 printf '%s\n' "$DOMAINESIA_PASSWORD" | domainesia-cli auth login --email you@example.com --password-stdin --live
 ```
+
+`auth headless-login` is also experimental and uses `curl` to submit the MyDomaiNesia login form without Chrome. It must not bypass CAPTCHA, 2FA, or other interactive protections. If MyDomaiNesia requires a challenge, use `auth browser-login` or cookie import instead.
 
 ## Write Safety
 

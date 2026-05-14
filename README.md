@@ -109,12 +109,31 @@ domainesia-cli --json auth validate
 ~/.domainesia/cookies.txt
 ```
 
-Manual cookie import:
+Headless VPS cookie import:
+
+```bash
+ssh user@vps 'mkdir -p ~/.domainesia && chmod 700 ~/.domainesia'
+cat ~/.domainesia/cookies.txt | ssh user@vps 'domainesia-cli --json auth import-cookies --from-stdin'
+ssh user@vps 'domainesia-cli --json auth validate'
+```
+
+This is the safest Chrome-free VPS flow: authenticate on a trusted workstation, then import only the Netscape cookie jar into the server. Do not paste cookies into chat, logs, issues, or shell history.
+
+Manual cookie import from a file:
 
 ```bash
 domainesia-cli auth open-login
 domainesia-cli --json auth import-cookies --from ~/Downloads/my.domainesia.cookies.txt
 ```
+
+Experimental headless login without Chrome:
+
+```bash
+DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1 domainesia-cli --json auth headless-login --email you@example.com --password-stdin
+printf '%s\n' "$DOMAINESIA_PASSWORD" | DOMAINESIA_ENABLE_EXPERIMENTAL_ENDPOINTS=1 domainesia-cli --json auth headless-login --email you@example.com --password-stdin --live
+```
+
+`auth headless-login` fetches the MyDomaiNesia login form with `curl`, parses the token/action/fields, and posts the password from stdin. It does not bypass CAPTCHA, 2FA, or other interactive challenges; if a challenge is detected, use `auth browser-login` or `auth import-cookies --from-stdin` instead.
 
 Logout removes the local cookie jar:
 

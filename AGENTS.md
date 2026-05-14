@@ -26,6 +26,8 @@ Never commit, paste, print, or summarize secret values from:
 
 Do not add logging that prints cookies, hidden form tokens, full HTML bodies, request headers, `Set-Cookie`, or authenticated response previews.
 
+For headless/VPS auth, prefer `auth import-cookies --from-stdin` over storing cookies in command arguments. `auth headless-login` is experimental and must not bypass CAPTCHA, 2FA, or other interactive protections.
+
 All MyDomaiNesia URL handling must remain constrained to:
 
 - Relative paths beginning with `/`
@@ -117,4 +119,3 @@ Maintain clear disclaimers:
 - This is an unofficial project.
 - Users are responsible for account actions and policy compliance.
 - Official APIs or supported integrations are preferred when available.
-

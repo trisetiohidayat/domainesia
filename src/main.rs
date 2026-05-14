@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -152,6 +152,16 @@ struct DnsForm {
     records: Vec<DnsRecord>,
 }
 
+#[derive(Debug, Clone)]
+struct LoginForm {
+    action: String,
+    username_field: String,
+    password_field: String,
+    token: String,
+    timezone_field: Option<String>,
+    recaptcha_present: bool,
+}
+
 fn main() {
     let opts = parse_opts(env::args().skip(1).collect());
     let result = run(&opts);
@@ -271,9 +281,10 @@ fn cmd_auth(opts: &Opts) -> Result<(), String> {
         "browser-login" => cmd_auth_browser_login(opts),
         "import-cookies" => cmd_auth_import_cookies(opts),
         "configure" => cmd_auth_configure(opts),
+        "headless-login" => cmd_auth_headless_login(opts),
         "login" => cmd_auth_login(opts),
         _ => Err(
-            "usage: domainesia-cli auth <status|validate|logout|open-login|import-cookies|configure|login> ..."
+            "usage: domainesia-cli auth <status|validate|logout|open-login|browser-login|import-cookies|configure|headless-login|login> ..."
                 .to_string(),
         ),
     }
@@ -444,10 +455,6 @@ fn cmd_auth_browser_login(opts: &Opts) -> Result<(), String> {
 }
 
 fn cmd_auth_import_cookies(opts: &Opts) -> Result<(), String> {
-    let source = value_after(&opts.args, "--from").ok_or("missing --from <cookies.txt>")?;
-    if !Path::new(source).is_file() {
-        return Err("source cookie file is not readable".to_string());
-    }
     let config = Config::load();
     let target = value_after(&opts.args, "--to")
         .map(PathBuf::from)
@@ -458,7 +465,24 @@ fn cmd_auth_import_cookies(opts: &Opts) -> Result<(), String> {
             .map_err(|e| format!("failed to create cookie directory: {e}"))?;
         set_owner_only_dir_permissions(parent)?;
     }
-    fs::copy(source, &target).map_err(|e| format!("failed to import cookies: {e}"))?;
+    if has_flag(&opts.args, "--from-stdin") {
+        let mut input = String::new();
+        io::stdin()
+            .read_to_string(&mut input)
+            .map_err(|e| format!("failed to read cookies from stdin: {e}"))?;
+        if input.trim().is_empty() {
+            return Err("stdin cookie content was empty".to_string());
+        }
+        write_owner_only_file(&target, normalize_cookie_input(&input).as_bytes())?;
+    } else {
+        let source = value_after(&opts.args, "--from")
+            .ok_or("missing --from <cookies.txt> or --from-stdin")?;
+        if !Path::new(source).is_file() {
+            return Err("source cookie file is not readable".to_string());
+        }
+        let bytes = fs::read(source).map_err(|e| format!("failed to read source cookies: {e}"))?;
+        write_owner_only_file(&target, &bytes)?;
+    }
     set_owner_only_permissions(&target)?;
     let target_string = target.display().to_string();
     upsert_config_values(&[("DOMAINESIA_COOKIE_JAR", target_string.as_str())])?;
@@ -471,6 +495,103 @@ fn cmd_auth_import_cookies(opts: &Opts) -> Result<(), String> {
         ),
     );
     Ok(())
+}
+
+fn cmd_auth_headless_login(opts: &Opts) -> Result<(), String> {
+    ensure_experimental_enabled("auth headless-login")?;
+    if !command_exists("curl") {
+        return Err("auth headless-login requires curl".to_string());
+    }
+    let config = Config::load();
+    let live = has_flag(&opts.args, "--live");
+    let email = value_after(&opts.args, "--email");
+    let login_url = value_after(&opts.args, "--url").unwrap_or("/");
+    let login_url = absolute_domainesia_url(login_url)?;
+    let cookie_jar = value_after(&opts.args, "--cookie-jar")
+        .map(PathBuf::from)
+        .or_else(|| config.get("DOMAINESIA_COOKIE_JAR").map(PathBuf::from))
+        .unwrap_or_else(default_cookie_jar_path);
+    let login_html = if live {
+        prepare_cookie_jar_parent(&cookie_jar)?;
+        curl_get_public_with_cookie_jar(&login_url, &cookie_jar)?
+    } else {
+        curl_get_public_no_cookie(&login_url)?
+    };
+    let form = parse_login_form(&login_html).ok_or("failed to parse login form")?;
+    let challenge_detected =
+        form.recaptcha_present || login_html.to_ascii_lowercase().contains("captcha");
+    if !live {
+        emit_ok(
+            opts,
+            "auth headless-login",
+            &format!(
+                "{{\"mode\":\"dry-run\",\"ready_for_live\":{},\"login_url\":\"{}\",\"action\":\"{}\",\"username_field\":\"{}\",\"password_field\":\"{}\",\"token_present\":{},\"timezone_field_present\":{},\"challenge_detected\":{},\"password_source\":\"{}\"}}",
+                email.is_some() && has_flag(&opts.args, "--password-stdin") && !challenge_detected,
+                json_escape(&login_url),
+                json_escape(&form.action),
+                json_escape(&form.username_field),
+                json_escape(&form.password_field),
+                !form.token.is_empty(),
+                form.timezone_field.is_some(),
+                challenge_detected,
+                if has_flag(&opts.args, "--password-stdin") { "stdin" } else { "missing" }
+            ),
+        );
+        return Ok(());
+    }
+    if challenge_detected {
+        return Err("login page includes captcha/challenge markers; headless-login will not bypass interactive protections. Use auth import-cookies --from-stdin or auth browser-login.".to_string());
+    }
+    let email = email.ok_or("live headless-login requires --email")?;
+    if !has_flag(&opts.args, "--password-stdin") {
+        return Err("live headless-login requires --password-stdin so the password is not stored in shell history".to_string());
+    }
+    let mut password = String::new();
+    io::stdin()
+        .read_line(&mut password)
+        .map_err(|e| format!("failed to read password from stdin: {e}"))?;
+    let password = password.trim_end_matches(&['\r', '\n'][..]).to_string();
+    if password.is_empty() {
+        return Err("password from stdin was empty".to_string());
+    }
+    let timezone = value_after(&opts.args, "--timezone").unwrap_or("UTC");
+    let mut pairs = vec![
+        ("token".to_string(), form.token.clone()),
+        (form.username_field.clone(), email.to_string()),
+        (form.password_field.clone(), password.clone()),
+    ];
+    if let Some(field) = &form.timezone_field {
+        pairs.push((field.clone(), timezone.to_string()));
+    }
+    let body = form_urlencoded(&pairs);
+    let action_url = absolute_domainesia_url(&form.action)?;
+    let response = curl_post_public_with_cookie_jar(&action_url, &cookie_jar, &body)?;
+    drop(password);
+    set_owner_only_permissions(&cookie_jar)?;
+    let authenticated = response.contains("MyDomaiNesia")
+        && !response.contains("rp=/login")
+        && !response.contains("Login to your account")
+        && !response.contains("inputPassword");
+    let challenge_after_login = response.to_ascii_lowercase().contains("two-factor")
+        || response.to_ascii_lowercase().contains("captcha")
+        || response.to_ascii_lowercase().contains("verification");
+    let cookie_string = cookie_jar.display().to_string();
+    upsert_config_values(&[("DOMAINESIA_COOKIE_JAR", cookie_string.as_str())])?;
+    let body = format!(
+        "{{\"mode\":\"live\",\"cookie_jar\":\"{}\",\"authenticated_hint\":{},\"challenge_after_login\":{},\"response_bytes\":{}}}",
+        json_escape(&cookie_jar.display().to_string()),
+        authenticated,
+        challenge_after_login,
+        response.len()
+    );
+    emit_ok(opts, "auth headless-login", &body);
+    if authenticated {
+        Ok(())
+    } else if challenge_after_login {
+        Err("login submitted but an interactive challenge or verification step appears to be required".to_string())
+    } else {
+        Err("login submitted but authenticated dashboard was not detected".to_string())
+    }
 }
 
 fn cmd_auth_configure(opts: &Opts) -> Result<(), String> {
@@ -1533,6 +1654,85 @@ fn http_post_form(path_or_url: &str, body: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn prepare_cookie_jar_parent(cookie_jar: &Path) -> Result<(), String> {
+    if let Some(parent) = cookie_jar.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create cookie directory: {e}"))?;
+        set_owner_only_dir_permissions(parent)?;
+    }
+    if cookie_jar.exists() {
+        ensure_secure_path(cookie_jar, PathKind::File)?;
+    } else {
+        write_owner_only_file(cookie_jar, b"")?;
+    }
+    Ok(())
+}
+
+fn curl_get_public_no_cookie(url: &str) -> Result<String, String> {
+    let output = Command::new("curl")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--fail-with-body")
+        .arg("--location")
+        .arg(url)
+        .output()
+        .map_err(|e| format!("failed to execute curl: {e}"))?;
+    if !output.status.success() {
+        return Err(safe_curl_error("login form GET failed", &output));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn curl_get_public_with_cookie_jar(url: &str, cookie_jar: &Path) -> Result<String, String> {
+    let output = Command::new("curl")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--fail-with-body")
+        .arg("--location")
+        .arg("--cookie")
+        .arg(cookie_jar)
+        .arg("--cookie-jar")
+        .arg(cookie_jar)
+        .arg(url)
+        .output()
+        .map_err(|e| format!("failed to execute curl: {e}"))?;
+    if !output.status.success() {
+        return Err(safe_curl_error("login form GET failed", &output));
+    }
+    set_owner_only_permissions(cookie_jar)?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn curl_post_public_with_cookie_jar(
+    url: &str,
+    cookie_jar: &Path,
+    body: &str,
+) -> Result<String, String> {
+    let output = Command::new("curl")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--fail-with-body")
+        .arg("--location")
+        .arg("--cookie")
+        .arg(cookie_jar)
+        .arg("--cookie-jar")
+        .arg(cookie_jar)
+        .arg("--header")
+        .arg("Content-Type: application/x-www-form-urlencoded")
+        .arg("--request")
+        .arg("POST")
+        .arg("--data")
+        .arg(body)
+        .arg(url)
+        .output()
+        .map_err(|e| format!("failed to execute curl: {e}"))?;
+    if !output.status.success() {
+        return Err(safe_curl_error("headless login POST failed", &output));
+    }
+    set_owner_only_permissions(cookie_jar)?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 fn absolute_domainesia_url(path_or_url: &str) -> Result<String, String> {
     if path_or_url.starts_with('/') {
         Ok(format!("https://my.domainesia.com{path_or_url}"))
@@ -1698,6 +1898,44 @@ fn parse_dns_form(html: &str, domain: &str) -> Option<DnsForm> {
     })
 }
 
+fn parse_login_form(html: &str) -> Option<LoginForm> {
+    for form in html.split("<form").skip(1) {
+        let attrs = form.split('>').next().unwrap_or("");
+        let body = form.split("</form>").next().unwrap_or("");
+        let lower_body = body.to_ascii_lowercase();
+        if !lower_body.contains("password") {
+            continue;
+        }
+        let action = attr_value(attrs, "action").unwrap_or_else(|| "/".to_string());
+        let username_field = input_name_by_type(body, "email")
+            .or_else(|| input_name_by_id(body, "inputEmail"))
+            .or_else(|| input_name_by_placeholder(body, "Email"))
+            .unwrap_or_else(|| "username".to_string());
+        let password_field = input_name_by_type(body, "password")
+            .or_else(|| input_name_by_id(body, "inputPassword"))
+            .unwrap_or_else(|| "password".to_string());
+        let token = input_value_after_name(body, "token");
+        let timezone_field =
+            if body.contains("name=\"timezone\"") || body.contains("name='timezone'") {
+                Some("timezone".to_string())
+            } else {
+                None
+            };
+        let recaptcha_present = lower_body.contains("recaptcha")
+            || lower_body.contains("turnstile")
+            || html.to_ascii_lowercase().contains("recaptchasitekey");
+        return Some(LoginForm {
+            action: html_unescape(&action),
+            username_field,
+            password_field,
+            token,
+            timezone_field,
+            recaptcha_present,
+        });
+    }
+    None
+}
+
 fn parse_invoices_json(html: &str) -> String {
     let table = extract_between(html, "<tbody>", "</tbody>").unwrap_or_default();
     let mut invoices = Vec::new();
@@ -1854,7 +2092,7 @@ fn fqdn(record: &DnsRecord) -> String {
 
 fn print_help() {
     println!(
-        "domainesia-cli {VERSION}\n\nUSAGE:\n  domainesia-cli [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove cookie jar and Chrome profile by default\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Experimental endpoint-driven login\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth logout [--cookie-only]\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require DOMAINESIA_ALLOW_LIVE_WRITES=1 and --confirm <fqdn>\n"
+        "domainesia-cli {VERSION}\n\nUSAGE:\n  domainesia-cli [--json] <command>\n\nCOMMANDS:\n  doctor                         Check config and local prerequisites\n  init --domain <domain>          Write ~/.domainesia/config.env\n  auth status                     Check local auth material\n  auth validate                   Verify current cookie reaches dashboard\n  auth logout                     Remove cookie jar and Chrome profile by default\n  auth open-login                 Open MyDomaiNesia login in a browser\n  auth browser-login              Launch Chrome, wait for login, capture cookies\n  auth import-cookies --from <f>  Copy browser-exported cookies into config\n  auth import-cookies --from-stdin Import Netscape cookies from stdin\n  auth headless-login             Experimental curl-based login without Chrome\n  auth configure ...              Store login/DNS endpoints or CSRF settings\n  auth login ...                  Experimental endpoint-driven login\n  features list|forms             Inventory MyDomaiNesia routes/forms\n  domains list|resolve|detail     Read domain portfolio and IDs\n  dns list                        List DNS records for a domain\n  dns export [--output file]      Export DNS records as JSON\n  dns plan-add ...                Print a DNS add plan\n  dns add ... [--dry-run|--live]  Add a DNS record via DNS Management form\n  dns update ... [--dry-run|--live] Update a DNS record by host name\n  dns delete ... [--dry-run|--live] Delete a DNS record by host name\n  invoices list                   List invoices\n  endpoint import-har <file>      Extract endpoint candidates from a local HAR\n  raw get <url>                   Read-only GET for domainesia.com URLs\n  version                         Print version\n\nAUTH FLAGS:\n  auth logout [--cookie-only]\n  auth browser-login [--timeout-seconds 180] [--port 9229] [--wait-url-part clientarea.php]\n  auth headless-login --email <email> --password-stdin [--url <url>] [--timezone UTC] [--live]\n  auth login --email <email> --password-stdin [--endpoint <url>] [--live]\n  auth configure [--login-endpoint <url>] [--dns-add-endpoint <url>] [--csrf-header <name>] [--csrf-token <token>]\n\nDNS FLAGS:\n  --domain <domain> --name <name> --type <A|AAAA|CNAME|TXT|MX> --value <value> [--ttl 3600] [--priority n]\n  Live writes also require DOMAINESIA_ALLOW_LIVE_WRITES=1 and --confirm <fqdn>\n"
     );
 }
 
@@ -1933,6 +2171,36 @@ fn input_value_after_name(row: &str, name: &str) -> String {
     attr_value(&row[tag_start..tag_end], "value").unwrap_or_default()
 }
 
+fn input_name_by_type(html: &str, input_type: &str) -> Option<String> {
+    find_input_attr_by_attr(html, "type", input_type, "name")
+}
+
+fn input_name_by_id(html: &str, id: &str) -> Option<String> {
+    find_input_attr_by_attr(html, "id", id, "name")
+}
+
+fn input_name_by_placeholder(html: &str, placeholder: &str) -> Option<String> {
+    find_input_attr_by_attr(html, "placeholder", placeholder, "name")
+}
+
+fn find_input_attr_by_attr(
+    html: &str,
+    match_attr: &str,
+    match_value: &str,
+    return_attr: &str,
+) -> Option<String> {
+    for input in html.split("<input").skip(1) {
+        let tag = input.split('>').next().unwrap_or("");
+        let Some(value) = attr_value(tag, match_attr) else {
+            continue;
+        };
+        if value.eq_ignore_ascii_case(match_value) {
+            return attr_value(tag, return_attr);
+        }
+    }
+    None
+}
+
 fn selected_option_value(row: &str) -> Option<String> {
     let selected_pos = row.find("selected=\"selected\"")?;
     let before = &row[..selected_pos];
@@ -1980,6 +2248,27 @@ fn html_unescape(input: &str) -> String {
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&nbsp;", " ")
+}
+
+fn form_urlencoded(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(key, value)| format!("{}={}", url_encode(key), url_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn normalize_cookie_input(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.starts_with("# Netscape HTTP Cookie File") {
+        let mut out = trimmed.to_string();
+        out.push('\n');
+        return out;
+    }
+    let mut out = String::from("# Netscape HTTP Cookie File\n");
+    out.push_str(trimmed);
+    out.push('\n');
+    out
 }
 
 fn command_exists(name: &str) -> bool {
@@ -2119,6 +2408,35 @@ mod tests {
         assert_eq!(form.records[0].name, "app");
         assert_eq!(form.records[0].record_type, "A");
         assert_eq!(form.records[0].value, "192.0.2.10");
+    }
+
+    #[test]
+    fn parses_sanitized_login_form_fixture() {
+        let html = r#"
+        <script>var recaptchaSiteKey = "test";</script>
+        <form method="post" action="/dnthemeapi.php?action=Login&amp;module=dnops">
+          <input type="hidden" name="token" value="redacted" />
+          <input type="hidden" name="timezone" value="" />
+          <input type="email" name="username" id="inputEmail" placeholder="Email">
+          <input type="password" name="password" id="inputPassword">
+        </form>
+        "#;
+        let form = parse_login_form(html).expect("login form");
+        assert_eq!(form.action, "/dnthemeapi.php?action=Login&module=dnops");
+        assert_eq!(form.username_field, "username");
+        assert_eq!(form.password_field, "password");
+        assert_eq!(form.token, "redacted");
+        assert_eq!(form.timezone_field, Some("timezone".to_string()));
+        assert!(form.recaptcha_present);
+    }
+
+    #[test]
+    fn normalizes_cookie_input() {
+        let text = ".domainesia.com\tTRUE\t/\tTRUE\t0\tname\tvalue";
+        assert_eq!(
+            normalize_cookie_input(text),
+            "# Netscape HTTP Cookie File\n.domainesia.com\tTRUE\t/\tTRUE\t0\tname\tvalue\n"
+        );
     }
 
     #[test]
